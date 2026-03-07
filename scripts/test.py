@@ -2,13 +2,14 @@
 # requires-python = ">=3.14"
 # dependencies = []
 # ///
+import os
 import subprocess
 import unittest
 from contextlib import contextmanager
 from typing import Optional
 
-# adapt as necessary for your system
-DOCKER = "/opt/podman/bin/podman"
+# adapt as necessary for your system (override via DOCKER env var)
+DOCKER = os.environ.get("DOCKER", "/opt/podman/bin/podman")
 CONTAINER_CONFIG_PATH = "/etc/kwon/jobs.toml"
 CONTAINER_KWON_BIN = "/opt/kwon-bin/kwon"
 CONTAINER_LOG_FILE = "/var/log/kwon/kwon.log"

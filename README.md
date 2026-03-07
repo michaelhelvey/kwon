@@ -1,5 +1,11 @@
 <h1 align=center><code>kwon</code></h1>
 
+<p align=center>
+  <a href="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml">
+    <img src="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+</p>
+
 `kwon` is a cron-like job manager for personal linux computers. It's designed to be the simplest way
 to run scheduled jobs on your machine.
 

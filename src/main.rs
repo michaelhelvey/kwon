@@ -40,7 +40,7 @@ enum CustomLogLevel {
 
 impl CustomLogLevel {
     /// Converts a deserialized `CustomLogLevel` to a `LevelFilter` from the `log` crate.
-    fn to_level_filter(self) -> LevelFilter {
+    fn to_level_filter(&self) -> LevelFilter {
         match self {
             CustomLogLevel::Debug => LevelFilter::Debug,
             CustomLogLevel::Info => LevelFilter::Info,
