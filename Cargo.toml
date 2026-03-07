@@ -1,0 +1,26 @@
+[package]
+name = "kwon"
+description = "cron for humans"
+authors = ["Michael Helvey <michael.helvey1@gmail.com"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+camino = { version = "1.2.2", features = ["serde1"] }
+chrono = { version = "0.4.43", features = [
+    "alloc",
+    "std",
+    "clock",
+    "now",
+    "serde",
+] }
+clap = { version = "4.5.60", features = ["derive"] }
+log = "0.4.29"
+nix = "0.31.1"
+ftail = "0.3.1"
+serde = { version = "1.0.228", features = ["derive"] }
+syslog = "7.0.0"
+tokio = { version = "1.50.0", features = ["full"] }
+toml = "1.0.3"
+env_logger = "0.11.9"

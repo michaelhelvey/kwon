@@ -1,0 +1,110 @@
+<h1 align=center><code>kwon</code></h1>
+
+`kwon` is a cron-like job manager for personal linux computers. It's designed to be the simplest way
+to run scheduled jobs on your machine.
+
+**Key differences from cron**:
+
+- Designed for single-user systems. It always runs as root.
+- Human-oriented configuration syntax. Every job is specified as just 1) the number of seconds
+  between invocations and 2) the start time, as an ISO 8601 formattted date string. This is very
+  simple, but always very easy to remember.
+- Easy observability. All logs, including the stdout and stderr pipes from your scheduled jobs, go
+  to syslog by default. Or you can optionally take control of logging yourself by passing a custom
+  log file path.
+
+`kwon` isn't trying to be `cron`. If you're building a server-side system for production, you're
+probably better off with `cron`, or better yet, a real distributed job queue. `kwon` is very
+consciously for single-user personal computers.
+
+## Getting Started
+
+**Pre-requisites**: A reasonably recent Rust toolchain. At the time of writing, for me, that's
+`rustc 1.93.1 (01f6ddf75 2026-02-11)`. And a computer running linux. (You can probably adapt this to
+work on any nix-like pretty easily, but I've only tested on linux -- see the e2e test.)
+
+1. Download this repository.
+2. Run `cargo build --release` from the repository root. Feel free to customize the target with
+   `--target` as you see fit, e.g. to build against `musl` as your libc. At this point, you should
+   have a copy of the binary at `./target/release/kwon`.
+3. Copy `./target/release/kwon` to somwhere on your `$PATH`. Or don't, and type out the absolute
+   path to it every time. It's your system, I won't tell you what to do :^)
+
+**I have a systemd-based linux distribution**
+
+Run `sudo kwon install --systemd`. This will a) create a default configuration file for you at
+`/etc/kwon/jobs.toml`, b) create a systemd service for you called `kwon` and start it.
+
+**I am a special snowflake and I'm not using sudo/systemd/etc**
+
+First of all, I love you, and I'm proud of you. Now here's how to install `kwon`: configure your
+init system of choice to run `kwon daemon` as a background process. This will, each minute, load
+your configuration file and execute any pending jobs.
+
+## Architectural Recommendations
+
+- `kwon` is not designed to run more than 20 jobs at a time in parallel. this limit is enforced with
+  a `tokio::sync::Semaphore`. You can easily change this in the source code and rebuild, which may
+  or may not be fine, depending on your hardware, and how expensive your jobs are. I'm setting it to
+  20 because I think that there should be _a_ hard cap on parallelism, and I think that very few
+  people will want to run more than 20 jobs at a time. _Note that this is not a hard-cap on the
+  number of jobs in your config file: it's a cap on the number of jobs that all run at the same
+  time. If you have lots of jobs that run, for example, every morning, for the sake of your
+  computer, you should probably offset them a little bit._
+- `kwon` does not run jobs for longer than 60 seconds. Jobs are designed to be relatively
+  short-lived, repeatedable actions. If you need something that runs longer, you're probably better
+  off creating a standalone systemd service or similar rather than using `kwon`. If the process
+  created by your job runs for longer than 60 seconds, it will be terminated with `SIGKILL`.
+
+## Configuration Reference
+
+_TODO. I think something like the below_
+
+```toml
+# general configuration
+log_file = /var/log/kwon/xyz.log
+log_level = "debug"
+
+# jobs configuration
+[jobs.thing_1]
+working_directory = "/home/me/some_folder"
+command = "/usr/bin/env zsh -lic 'some command'"
+interval = 3600 # every 3600 seconds, or 1 hour
+start = "2026-03-07T22:24:26.286Z"
+```
+
+## Local Development
+
+**Pre-requisites**: [just](https://github.com/casey/just) as a task runner,
+[uv](https://github.com/astral-sh/uv) as a Python toolchain manager, a container runtime (Docker or
+Podman), and the `aarch64-unknown-linux-musl` Rust target
+(`rustup target add aarch64-unknown-linux-musl`).
+
+If you are on macOS or somewhere else that does not have the GNU linker, you need to install a cross
+toolchain so that you can compile for the linux container `kwon` uses for its e2e tests on your host
+system. For example, via Homebrew on macOS, `brew install filosottile/musl-cross/musl-cross`. Then
+set the `linker` argument for the target in your `~/.cargo/config.toml` accordingly.
+
+Run `just --list` to see all available commands. The typical workflow is:
+
+```sh
+just setup    # cross-compile + start the test container (slow, once)
+just test     # run e2e tests against the running container (fast, repeatable)
+just test     # run them again -- no rebuild or container recreation needed
+just teardown # stop and remove the container when you're done
+```
+
+Other useful recipes:
+
+```sh
+just check    # fmt + lint + build (host target)
+just retest   # rebuild the cross binary and re-run tests in one step
+just e2e      # full setup → test → teardown cycle
+```
+
+Note that basically everything about kwon will work on macOS natively, except for the `systemd`
+integration. One could probably port this software to macOS or any other \*nix without any trouble.
+
+## License
+
+MIT

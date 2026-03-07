@@ -1,0 +1,10 @@
+services:
+  kwon:
+    build:
+      context: ./scripts
+      dockerfile: ./Dockerfile.e2e
+    platform: linux/arm64
+    volumes:
+      - ./target/aarch64-unknown-linux-musl/debug:/opt/kwon-bin
+      - ./data:/var/log/kwon
+    command: sleep infinity
