@@ -85,6 +85,11 @@ e2e: setup test teardown
 # Convenience
 # ---------------------------------------------------------------------------
 
+# Run the the crate on the host system with our test configuration file, since
+# the default location of /etc/kwon/jobs.toml will not exist
+local *args:
+    cargo r -q -- -c ./data/test_jobs_config.toml {{args}}
+
 # Rebuild the cross binary and re-run e2e tests (quick feedback loop; no container recreate)
 retest: build-cross test
 

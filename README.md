@@ -1,8 +1,11 @@
 <h1 align=center><code>kwon</code></h1>
 
-<p align=center>
+<p align="left">
   <a href="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml">
-    <img src="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml/badge.svg" alt="CI">
+    <img alt="CI Status" src="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml/badge.svg">
+  </a>
+  <a href="https://github.com/michaelhelvey/kwon/actions/workflows/ci.yml">
+    <img alt="GitHub License" src="https://img.shields.io/github/license/michaelhelvey/kwon">
   </a>
 </p>
 
@@ -14,7 +17,7 @@ to run scheduled jobs on your machine.
 - Designed for single-user systems. It always runs as root.
 - Human-oriented configuration syntax. Every job is specified as just 1) the number of seconds
   between invocations and 2) the start time, as an ISO 8601 formattted date string. This is very
-  simple, but always very easy to remember.
+  simple, but also very easy to remember.
 - Easy observability. All logs, including the stdout and stderr pipes from your scheduled jobs, go
   to syslog by default. Or you can optionally take control of logging yourself by passing a custom
   log file path.
@@ -47,6 +50,9 @@ First of all, I love you, and I'm proud of you. Now here's how to install `kwon`
 init system of choice to run `kwon daemon` as a background process. This will, each minute, load
 your configuration file and execute any pending jobs.
 
+After installation, run `kwon doctor` to get some simple debugging output that you can verify to
+make sure that it looks like kwon is doing the right thing.
+
 ## Architectural Recommendations
 
 - `kwon` is not designed to run more than 20 jobs at a time in parallel. this limit is enforced with
@@ -57,26 +63,30 @@ your configuration file and execute any pending jobs.
   number of jobs in your config file: it's a cap on the number of jobs that all run at the same
   time. If you have lots of jobs that run, for example, every morning, for the sake of your
   computer, you should probably offset them a little bit._
-- `kwon` does not run jobs for longer than 60 seconds. Jobs are designed to be relatively
-  short-lived, repeatedable actions. If you need something that runs longer, you're probably better
-  off creating a standalone systemd service or similar rather than using `kwon`. If the process
-  created by your job runs for longer than 60 seconds, it will be terminated with `SIGKILL`.
+- `kwon` does not run jobs for longer than the tick rate of the main loop (default: 60 seconds).
+  Jobs are designed to be relatively short-lived, repeatable actions. If you need something that
+  runs longer, you're probably better off creating a standalone systemd service or similar rather
+  than using `kwon`. If the process created by your job runs for longer than 60 seconds, it will be
+  terminated with `SIGKILL`.
 
 ## Configuration Reference
 
-_TODO. I think something like the below_
+[See the `Config` struct in `./src/config.rs` for more details](./src/config.rs). An example
+configuration file is provided below. Please do not copy-paste the example. Please read the
+doc-comments on the struct to understand each option. There aren't a lot of them.
 
 ```toml
-# general configuration
-log_file = /var/log/kwon/xyz.log
+log_file = "/var/log/kwon.log"
 log_level = "debug"
+tick_rate_seconds = 120
 
-# jobs configuration
-[jobs.thing_1]
-working_directory = "/home/me/some_folder"
-command = "/usr/bin/env zsh -lic 'some command'"
-interval = 3600 # every 3600 seconds, or 1 hour
-start = "2026-03-07T22:24:26.286Z"
+[jobs.my_thing]
+executable = "/bin/zsh"
+args = ["-lic", "echo $FOO"]
+environment = { FOO = "bar" }
+working_directory = "/home/myuser/foo/bar/"
+interval_seconds = 3600
+start_at = "2026-03-07T22:24:26.286Z"
 ```
 
 ## Local Development

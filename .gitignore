@@ -1,5 +1,5 @@
 /target
-./data/kwon.log
+**/data/kwon.log
 TODO.md
 docker-compose.override.yml
 

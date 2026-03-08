@@ -1,1 +1,1 @@
-log_file = "/var/log/kwon.log"
+log_file = "./data/kwon.log"

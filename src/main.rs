@@ -1,126 +1,107 @@
-use anyhow::Context;
-use camino::Utf8PathBuf;
-use clap::{Parser, Subcommand};
-use ftail::Ftail;
-use log::{LevelFilter, info};
-use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/kwon/jobs.toml";
+use crate::config::{Arguments, Commands, Config, HistoryDatabase};
+use clap::Parser;
+use log::{debug, error, warn};
+use tokio::sync::Semaphore;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Arguments {
-    #[command(subcommand)]
-    command: Option<Commands>,
+mod config;
+mod doctor;
+mod job;
 
-    /// Optional absolute path to a configuration file. Default: /etc/kwon/jobs.toml
-    #[arg(short, long, global = true)]
-    config: Option<Utf8PathBuf>,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Installs kwon as a daemon on your system
-    Install {
-        /// Install as systemd
-        systemd: Option<bool>,
-    },
-    /// Starts the daemon process.  Use this to run kwon in the foreground, or use this as the
-    /// command to run in your sytemd service config or other
-    Daemon {},
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-enum CustomLogLevel {
-    Debug,
-    Info,
-    Warn,
-}
-
-impl CustomLogLevel {
-    /// Converts a deserialized `CustomLogLevel` to a `LevelFilter` from the `log` crate.
-    fn to_level_filter(&self) -> LevelFilter {
-        match self {
-            CustomLogLevel::Debug => LevelFilter::Debug,
-            CustomLogLevel::Info => LevelFilter::Info,
-            _ => LevelFilter::Warn,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-struct Config {
-    /// Optional absolute path to a file to append all log output to.  By default, logs to syslog.
-    /// By setting this option, you are taking all responsibility for log rotation and maintenance.
-    /// Kwon will simply blindly append all logs to this file.  Use at your own discretion.
-    /// This option supports one magic string, "$STDERR".  If you set this, all log output will be
-    /// redirected to stderr rather than to a file.  This is useful for debugging.
-    log_file: Option<String>,
-    /// Optional log level to set for kwon itself.  Default: Info
-    log_level: Option<CustomLogLevel>,
-    // TODO: set up jobs configuration
-}
-
-fn configure_log_backend(
-    file: Option<String>,
-    level: Option<CustomLogLevel>,
-) -> anyhow::Result<()> {
-    let level = level
-        .map(|l| l.to_level_filter())
-        .unwrap_or(LevelFilter::Info);
-
-    if let Some(file) = file {
-        if file == "$STDERR" {
-            eprintln!("configuring logging to stderr with level {level:?}");
-            env_logger::builder()
-                .filter_module("kwon", level)
-                .try_init()?;
-            return Ok(());
-        }
-
-        eprintln!("configuring logging to {file:?} with level {level:?}");
-        let path = Utf8PathBuf::from(file).into_std_path_buf();
-        Ftail::new().single_file(&path, true, level).init()?;
-        return Ok(());
-    }
-
-    eprintln!("configuring logging to default sink (syslog) with level {level:?}");
-    let formatter = syslog::Formatter3164 {
-        facility: syslog::Facility::LOG_USER,
-        hostname: None,
-        process: "kwon".into(),
-        pid: 0,
-    };
-
-    match syslog::unix(formatter) {
-        Err(e) => Err(anyhow::anyhow!(e).context("not able to connect to syslog")),
-        Ok(logger) => {
-            log::set_boxed_logger(Box::new(syslog::BasicLogger::new(logger)))
-                .map(|()| log::set_max_level(level))?;
-            Ok(())
-        }
-    }
-}
+const MAX_CONCURRENCY: usize = 20;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Start up, parse our arguments, parse our configuration, and then figure out where we should
-    // log to.
     let args = Arguments::parse();
-    let config_path = args
-        .config
-        .unwrap_or_else(|| Utf8PathBuf::from(DEFAULT_CONFIG_PATH));
+    let config_path = Config::get_path_or_default(&args.config);
+    let (app_config, logging_config) = Config::load_from_path(&config_path).await?;
 
-    let config_content = tokio::fs::read_to_string(&config_path)
-        .await
-        .with_context(|| format!("could not read file at {config_path:?}"))?;
-    eprintln!("read config content: {config_content:?}");
-    let config: Config =
-        toml::from_str(config_content.as_str()).context("invalid toml configuration file")?;
+    match args.command {
+        Commands::Doctor => {
+            doctor::print_doctor_checks(&config_path, &logging_config).await?;
+        }
+        Commands::Daemon => {
+            let history =
+                HistoryDatabase::get_or_default(&app_config.state_file_location).await?;
+            let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENCY));
+            loop {
+                debug!("reloading configuration from {config_path}");
+                // Reload config (but not the logger) on each tick, in case jobs have changed
+                let app_config = Config::parse_from_path(&config_path).await?;
+                let tick_rate = app_config.tick_rate_seconds.unwrap_or(60u64);
+                let job_count = app_config.jobs.len();
+                debug!("found {job_count} total jobs in config");
 
-    configure_log_backend(config.log_file, config.log_level)?;
-    info!("successfully configured logging to configured sink.  see stderr for details");
+                let now = chrono::Local::now();
+
+                // Collect jobs to run while holding the read lock, then drop it
+                // before spawning tasks that need write access.
+                let jobs_to_run: Vec<_> = {
+                    let guard = history.read().await;
+                    app_config
+                        .jobs
+                        .into_iter()
+                        .filter(|(key, value)| {
+                            if now < value.start_at {
+                                return false;
+                            }
+                            match guard.get_last_run(key) {
+                                Some(last_run) => {
+                                    (now - last_run).num_seconds() > value.interval_seconds
+                                }
+                                None => true,
+                            }
+                        })
+                        .collect()
+                };
+
+                let job_handles: Vec<_> = jobs_to_run
+                    .into_iter()
+                    .map(|(name, job)| {
+                        let sem = semaphore.clone();
+                        let history = history.clone();
+                        tokio::spawn(async move {
+                            match job::execute_job(name.as_str(), &job, sem).await {
+                                Err(e) => {
+                                    error!("error executing job {name}: {e:?}");
+                                }
+                                Ok(()) => {
+                                    let mut guard = history.write().await;
+                                    if let Err(e) = guard.write_last_run(&name).await {
+                                        error!("could not write history for job {name}: {e:?}");
+                                    }
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+
+                let batch_timeout = Duration::from_secs(tick_rate);
+                let start = tokio::time::Instant::now();
+                if tokio::time::timeout(
+                    batch_timeout,
+                    futures::future::join_all(job_handles),
+                )
+                .await
+                .is_err()
+                {
+                    warn!("batch timed out -- all jobs did not complete in {tick_rate} seconds");
+                }
+
+                let elapsed = start.elapsed().as_secs();
+                let remaining = tick_rate.saturating_sub(elapsed);
+                debug!(
+                    "jobs complete, waiting for {remaining} more seconds to fill tick_rate={tick_rate}"
+                );
+                tokio::time::sleep(Duration::from_secs(remaining)).await;
+            }
+        }
+        Commands::Install { .. } => {
+            anyhow::bail!("the 'install' command is not yet implemented");
+        }
+    }
 
     Ok(())
 }

@@ -4,8 +4,10 @@
 # ///
 import os
 import subprocess
+import time
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # adapt as necessary for your system (override via DOCKER env var)
@@ -13,8 +15,13 @@ DOCKER = os.environ.get("DOCKER", "/opt/podman/bin/podman")
 CONTAINER_CONFIG_PATH = "/etc/kwon/jobs.toml"
 CONTAINER_KWON_BIN = "/opt/kwon-bin/kwon"
 CONTAINER_LOG_FILE = "/var/log/kwon/kwon.log"
+CONTAINER_HISTORY_FILE = "/tmp/kwon-test-history.json"
+CONTAINER_MARKER_DIR = "/tmp/kwon-test-markers"
 HOST_LOG_PATH = "./data/kwon.log"
 LOG_SEP = ("-" * 10) + "\n"
+
+# Short tick rate for fast tests
+TICK_RATE = 2
 
 
 def docker_exec(cmd: str, check=True, input_bytes: Optional[bytes] = None):
@@ -65,6 +72,58 @@ def last_log_section():
         return sections[-1]
 
 
+def rfc3339(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def past_time() -> str:
+    return rfc3339(datetime.now(timezone.utc) - timedelta(hours=1))
+
+
+def future_time() -> str:
+    return rfc3339(datetime.now(timezone.utc) + timedelta(hours=1))
+
+
+def daemon_config(jobs_toml: str) -> str:
+    return f"""\
+log_file = "$STDERR"
+log_level = "debug"
+tick_rate_seconds = {TICK_RATE}
+state_file_location = "{CONTAINER_HISTORY_FILE}"
+
+{jobs_toml}
+"""
+
+
+@contextmanager
+def run_daemon(config: str):
+    """Start the daemon in the background, yield, then kill it and clean up."""
+    docker_exec(f"rm -rf {CONTAINER_MARKER_DIR} {CONTAINER_HISTORY_FILE}")
+    docker_exec(f"mkdir -p {CONTAINER_MARKER_DIR}")
+    write_container_config(config)
+    # start daemon in background
+    docker_exec(f"nohup {CONTAINER_KWON_BIN} daemon > /dev/null 2>&1 & echo $!")
+    try:
+        yield
+    finally:
+        docker_exec("pkill -f 'kwon daemon'", check=False)
+        docker_exec(f"rm -rf {CONTAINER_MARKER_DIR} {CONTAINER_HISTORY_FILE}", check=False)
+        write_container_config("")
+
+
+def marker_exists(name: str) -> bool:
+    result = docker_exec(f"test -f {CONTAINER_MARKER_DIR}/{name}", check=False)
+    return result.returncode == 0
+
+
+def marker_count(name: str) -> int:
+    """Read the integer content of a marker file, or 0 if it doesn't exist."""
+    result = docker_exec(f"cat {CONTAINER_MARKER_DIR}/{name}", check=False)
+    if result.returncode != 0:
+        return 0
+    return int(result.stdout.decode().strip())
+
+
 class BaseTest(unittest.TestCase):
     def assertContains(self, source: str, pattern: str):
         if pattern not in source:
@@ -76,19 +135,20 @@ class TestKwon(BaseTest):
     def test_initialization_and_logging_to_custom_log_file(self):
         config = f'log_file = "{CONTAINER_LOG_FILE}"\nlog_level = "debug"\n'
         with custom_config(config):
-            result = exec_and_log(CONTAINER_KWON_BIN, True)
+            result = exec_and_log(f"{CONTAINER_KWON_BIN} doctor", True)
             log = last_log_section()
             self.assertContains(
                 result.stderr.decode(),
                 f'configuring logging to "{CONTAINER_LOG_FILE}" with level Debug',
             )
             self.assertContains(
-                log, "successfully configured logging to configured sink"
+                log,
+                "successfully configured logging: ResolvedLogConfig { level: Debug, backend: File { path:",
             )
 
     def test_initialization_and_logging_to_syslog(self):
         with custom_config(""):
-            result = exec_and_log(CONTAINER_KWON_BIN, False)
+            result = exec_and_log(f"{CONTAINER_KWON_BIN} doctor", False)
             self.assertContains(
                 result.stderr.decode(),
                 "configuring logging to default sink (syslog) with level Info",
@@ -97,8 +157,108 @@ class TestKwon(BaseTest):
             result = exec_and_log("grep 'kwon' /var/log/syslog")
             self.assertContains(
                 result.stdout.decode(),
-                "successfully configured logging to configured sink",
+                "successfully configured logging: ResolvedLogConfig { level: Info, backend: Syslog }",
             )
+
+    def test_initialization_and_logging_to_stderr(self):
+        config = 'log_file = "$STDERR"\nlog_level = "debug"\n'
+        with custom_config(config):
+            result = exec_and_log(f"{CONTAINER_KWON_BIN} doctor", False)
+            self.assertContains(
+                result.stderr.decode(),
+                "configuring logging to stderr with level Debug",
+            )
+            self.assertContains(
+                result.stderr.decode(),
+                "successfully configured logging: ResolvedLogConfig { level: Debug, backend: Stderr }",
+            )
+
+
+class TestDaemonLoop(BaseTest):
+    def test_job_runs_when_start_at_is_in_the_past(self):
+        """A job with start_at in the past should execute on the first tick."""
+        config = daemon_config(f"""\
+[jobs.touch_marker]
+executable = "touch"
+args = ["{CONTAINER_MARKER_DIR}/ran"]
+start_at = "{past_time()}"
+interval_seconds = 3600
+""")
+        with run_daemon(config):
+            # wait for one full tick + buffer
+            time.sleep(TICK_RATE + 2)
+            self.assertTrue(marker_exists("ran"), "expected job to have created marker file")
+
+    def test_job_does_not_run_when_start_at_is_in_the_future(self):
+        """A job with start_at in the future should NOT execute."""
+        config = daemon_config(f"""\
+[jobs.future_job]
+executable = "touch"
+args = ["{CONTAINER_MARKER_DIR}/should_not_exist"]
+start_at = "{future_time()}"
+interval_seconds = 3600
+""")
+        with run_daemon(config):
+            time.sleep(TICK_RATE + 2)
+            self.assertFalse(
+                marker_exists("should_not_exist"),
+                "job with future start_at should not have run",
+            )
+
+    def test_job_respects_interval(self):
+        """A job should not re-run before its interval has elapsed."""
+        # Use a counter file: each run appends a line. With a long interval,
+        # only one run should happen across two ticks.
+        config = daemon_config(f"""\
+[jobs.counter]
+executable = "bash"
+args = ["-c", "expr $(cat {CONTAINER_MARKER_DIR}/count 2>/dev/null || echo 0) + 1 > {CONTAINER_MARKER_DIR}/count"]
+start_at = "{past_time()}"
+interval_seconds = 3600
+""")
+        with run_daemon(config):
+            # wait for two ticks
+            time.sleep((TICK_RATE + 1) * 2)
+            count = marker_count("count")
+            self.assertEqual(count, 1, f"expected job to run exactly once, but ran {count} times")
+
+    def test_failed_job_does_not_record_history(self):
+        """A job that exits non-zero should not be recorded in history,
+        so it will be retried on the next tick."""
+        config = daemon_config(f"""\
+[jobs.failing]
+executable = "bash"
+args = ["-c", "expr $(cat {CONTAINER_MARKER_DIR}/fail_count 2>/dev/null || echo 0) + 1 > {CONTAINER_MARKER_DIR}/fail_count; exit 1"]
+start_at = "{past_time()}"
+interval_seconds = 3600
+""")
+        with run_daemon(config):
+            # wait for two ticks — failing job should retry each tick
+            time.sleep((TICK_RATE + 1) * 2)
+            count = marker_count("fail_count")
+            self.assertGreaterEqual(
+                count, 2, f"expected failing job to retry, but only ran {count} times"
+            )
+
+    def test_multiple_jobs_run_concurrently(self):
+        """Two independent jobs should both execute within a single tick."""
+        config = daemon_config(f"""\
+[jobs.job_a]
+executable = "touch"
+args = ["{CONTAINER_MARKER_DIR}/a"]
+start_at = "{past_time()}"
+interval_seconds = 3600
+
+[jobs.job_b]
+executable = "touch"
+args = ["{CONTAINER_MARKER_DIR}/b"]
+start_at = "{past_time()}"
+interval_seconds = 3600
+""")
+        with run_daemon(config):
+            time.sleep(TICK_RATE + 2)
+            self.assertTrue(marker_exists("a"), "expected job_a to have run")
+            self.assertTrue(marker_exists("b"), "expected job_b to have run")
 
 
 if __name__ == "__main__":
