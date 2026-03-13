@@ -82,6 +82,39 @@ teardown:
 e2e: setup test teardown
 
 # ---------------------------------------------------------------------------
+# Manual testing of the published crate
+#
+# Spins up a systemd-based Ubuntu container with the Rust toolchain
+# pre-installed so you can `cargo install kwon` and exercise the full
+# install → daemon → doctor flow as an end user would.
+#
+#   just manual-test          — build the image, start the container, and
+#                               drop into an interactive shell
+#   just manual-test-teardown — stop and remove the container
+# ---------------------------------------------------------------------------
+
+manual_test_image := "kwon-manual-test"
+manual_test_container := "kwon-manual-test"
+
+# Build the manual-test image, start a systemd container, and open a shell.
+# Once inside you can run: cargo install kwon && kwon install --systemd
+manual-test:
+    docker build -t {{ manual_test_image }} -f scripts/Dockerfile.manual-test scripts/
+    -docker rm -f {{ manual_test_container }} 2>/dev/null
+    docker run -d --privileged \
+        --name {{ manual_test_container }} \
+        --tmpfs /run --tmpfs /run/lock \
+        -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+        {{ manual_test_image }}
+    @echo "Waiting for systemd to finish booting…"
+    @sleep 2
+    docker exec -it {{ manual_test_container }} bash
+
+# Stop and remove the manual-test container
+manual-test-teardown:
+    docker rm -f {{ manual_test_container }}
+
+# ---------------------------------------------------------------------------
 # Convenience
 # ---------------------------------------------------------------------------
 

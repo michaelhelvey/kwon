@@ -63,9 +63,14 @@ jobs:
             'services:' \
             '  kwon:' \
             '    platform: linux/amd64' \
+            '    privileged: true' \
             '    volumes:' \
             '      - ./target/x86_64-unknown-linux-musl/debug:/opt/kwon-bin' \
             '      - ./data:/var/log/kwon' \
+            '      - /sys/fs/cgroup:/sys/fs/cgroup:rw' \
+            '    tmpfs:' \
+            '      - /run' \
+            '      - /run/lock' \
             > docker-compose.override.yml
 
       - name: Start test container
@@ -73,6 +78,15 @@ jobs:
           mkdir -p data
           touch ./data/kwon.log
           docker compose up -d --build
+          # Wait for systemd to finish booting inside the container
+          for i in $(seq 1 30); do
+            if docker compose exec kwon systemctl is-system-running --wait 2>/dev/null | grep -qE 'running|degraded'; then
+              echo "systemd is ready"
+              break
+            fi
+            echo "Waiting for systemd to boot... ($i)"
+            sleep 1
+          done
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5

@@ -1,0 +1,36 @@
+# Manual test environment for the *published* kwon crate.
+#
+# Emulates a minimal systemd-based Ubuntu desktop so you can:
+#   cargo install kwon
+#   kwon install --systemd
+#   kwon doctor
+#   systemctl status kwon
+#
+# Build & run via: just manual-test
+
+FROM ubuntu:24.04
+
+# System packages: systemd (PID 1), rsyslog (syslog backend), and the Rust
+# toolchain prerequisites.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv rsyslog \
+        curl ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Strip systemd units that are useless / broken inside a container.
+RUN rm -f /lib/systemd/system/multi-user.target.wants/* \
+    /etc/systemd/system/*.wants/* \
+    /lib/systemd/system/local-fs.target.wants/* \
+    /lib/systemd/system/sockets.target.wants/*udev* \
+    /lib/systemd/system/sockets.target.wants/*initctl* \
+    /lib/systemd/system/sysinit.target.wants/systemd-tmpfiles-setup* \
+    /lib/systemd/system/systemd-update-utmp*
+
+# Install the Rust toolchain (stable, minimal profile — we only need cargo).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Start systemd as PID 1 so that `kwon install --systemd` works end-to-end.
+CMD ["/lib/systemd/systemd"]
