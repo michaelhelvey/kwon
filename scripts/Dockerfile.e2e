@@ -1,2 +1,11 @@
-FROM ubuntu:latest
-RUN apt-get update && apt-get install -y rsyslog && mkdir -p /etc/kwon
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y rsyslog systemd systemd-sysv && mkdir -p /etc/kwon
+# Remove unnecessary systemd units that fail in containers
+RUN rm -f /lib/systemd/system/multi-user.target.wants/* \
+    /etc/systemd/system/*.wants/* \
+    /lib/systemd/system/local-fs.target.wants/* \
+    /lib/systemd/system/sockets.target.wants/*udev* \
+    /lib/systemd/system/sockets.target.wants/*initctl* \
+    /lib/systemd/system/sysinit.target.wants/systemd-tmpfiles-setup* \
+    /lib/systemd/system/systemd-update-utmp*
+CMD ["/lib/systemd/systemd"]

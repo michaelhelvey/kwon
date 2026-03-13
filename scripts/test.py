@@ -42,6 +42,7 @@ def docker_exec(cmd: str, check=True, input_bytes: Optional[bytes] = None):
 
 
 def write_container_config(contents: str):
+    docker_exec(f"mkdir -p $(dirname {CONTAINER_CONFIG_PATH})")
     docker_exec(
         f"cat > {CONTAINER_CONFIG_PATH}",
         input_bytes=contents.encode(),
@@ -259,6 +260,90 @@ interval_seconds = 3600
             time.sleep(TICK_RATE + 2)
             self.assertTrue(marker_exists("a"), "expected job_a to have run")
             self.assertTrue(marker_exists("b"), "expected job_b to have run")
+
+
+class TestInstall(BaseTest):
+    """Tests for `kwon install --systemd`."""
+
+    def setUp(self):
+        """Clean up any prior install artifacts so each test starts fresh."""
+        docker_exec(f"rm -f {CONTAINER_CONFIG_PATH}", check=False)
+        docker_exec("rm -rf /etc/kwon", check=False)
+        docker_exec("rm -rf /var/lib/kwon", check=False)
+        docker_exec("rm -f /etc/systemd/system/kwon.service", check=False)
+        docker_exec("systemctl stop kwon", check=False)
+        docker_exec("systemctl disable kwon", check=False)
+        docker_exec("systemctl daemon-reload", check=False)
+
+    def tearDown(self):
+        """Stop and clean up the installed service."""
+        docker_exec("systemctl stop kwon", check=False)
+        docker_exec("systemctl disable kwon", check=False)
+        docker_exec("rm -f /etc/systemd/system/kwon.service", check=False)
+        docker_exec("systemctl daemon-reload", check=False)
+        docker_exec("rm -rf /etc/kwon /var/lib/kwon", check=False)
+
+    def test_install_creates_config_file(self):
+        """kwon install --systemd should create /etc/kwon/jobs.toml."""
+        result = docker_exec(f"{CONTAINER_KWON_BIN} install --systemd")
+        stderr = result.stderr.decode()
+        self.assertContains(stderr, "writing default config to /etc/kwon/jobs.toml")
+
+        # Verify the config file exists and is valid TOML (kwon doctor can parse it)
+        result = docker_exec(f"test -f {CONTAINER_CONFIG_PATH}")
+        self.assertEqual(result.returncode, 0)
+
+    def test_install_creates_state_directory(self):
+        """kwon install --systemd should create /var/lib/kwon."""
+        docker_exec(f"{CONTAINER_KWON_BIN} install --systemd")
+        result = docker_exec("test -d /var/lib/kwon")
+        self.assertEqual(result.returncode, 0)
+
+    def test_install_creates_and_starts_systemd_service(self):
+        """kwon install --systemd should create, enable, and start the kwon service."""
+        docker_exec(f"{CONTAINER_KWON_BIN} install --systemd")
+
+        # The unit file should exist
+        result = docker_exec("test -f /etc/systemd/system/kwon.service")
+        self.assertEqual(result.returncode, 0)
+
+        # The service should be enabled
+        result = docker_exec("systemctl is-enabled kwon")
+        self.assertContains(result.stdout.decode(), "enabled")
+
+        # The service should be active
+        time.sleep(1)  # give systemd a moment to start the process
+        result = docker_exec("systemctl is-active kwon")
+        self.assertContains(result.stdout.decode(), "active")
+
+    def test_install_does_not_overwrite_existing_config(self):
+        """If /etc/kwon/jobs.toml already exists, install should skip it."""
+        docker_exec("mkdir -p /etc/kwon")
+        custom_content = "# my custom config"
+        docker_exec(
+            f"cat > {CONTAINER_CONFIG_PATH}",
+            input_bytes=custom_content.encode(),
+        )
+
+        result = docker_exec(f"{CONTAINER_KWON_BIN} install --systemd")
+        stderr = result.stderr.decode()
+        self.assertContains(stderr, "config file already exists")
+
+        # Verify our custom content was preserved
+        result = docker_exec(f"cat {CONTAINER_CONFIG_PATH}")
+        self.assertEqual(result.stdout.decode().strip(), custom_content)
+
+    def test_install_without_systemd_flag_fails(self):
+        """kwon install without --systemd should fail with guidance."""
+        result = docker_exec(f"{CONTAINER_KWON_BIN} install", check=False)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_install_unit_file_references_correct_binary(self):
+        """The generated systemd unit should point ExecStart at the kwon binary."""
+        docker_exec(f"{CONTAINER_KWON_BIN} install --systemd")
+        result = docker_exec("cat /etc/systemd/system/kwon.service")
+        unit_content = result.stdout.decode()
+        self.assertContains(unit_content, f"ExecStart={CONTAINER_KWON_BIN} daemon")
 
 
 if __name__ == "__main__":

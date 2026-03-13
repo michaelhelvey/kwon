@@ -1,9 +1,23 @@
 [package]
 name = "kwon"
-description = "cron for humans"
-authors = ["Michael Helvey <michael.helvey1@gmail.com"]
+description = "A cron-like job scheduler for personal Linux computers."
+authors = ["Michael Helvey <michael.helvey1@gmail.com>"]
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/michaelhelvey/kwon"
+homepage = "https://github.com/michaelhelvey/kwon"
+readme = "README.md"
+keywords = ["cron", "scheduler", "systemd", "jobs", "daemon"]
+categories = ["command-line-utilities"]
+exclude = [
+    "scripts/",
+    "data/",
+    ".github/",
+    "docker-compose.yml",
+    "docker-compose.override.yml",
+    "justfile",
+]
 
 [dependencies]
 anyhow = "1.0.102"
@@ -17,7 +31,6 @@ chrono = { version = "0.4.43", features = [
 ] }
 clap = { version = "4.5.60", features = ["derive"] }
 log = "0.4.29"
-nix = "0.31.1"
 ftail = "0.3.1"
 serde = { version = "1.0.228", features = ["derive"] }
 syslog = "7.0.0"
@@ -27,4 +40,5 @@ env_logger = "0.11.9"
 whoami = "2.1.1"
 colored = "3.1.1"
 serde_json = "1.0.149"
+tempfile = "3"
 futures = "0.3.32"

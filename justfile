@@ -71,7 +71,7 @@ test:
     @# ensure rsyslogd is up inside the container (strips the imklog module
     @# on first run because there is no kernel log device in the container)
     docker compose exec kwon bash -c \
-        "pgrep rsyslogd || (sed -i '/imklog/d' /etc/rsyslog.conf && rsyslogd)"
+        "sed -i '/imklog/d' /etc/rsyslog.conf; systemctl start rsyslog 2>/dev/null || (pgrep rsyslogd || rsyslogd)"
     uv run --script ./scripts/test.py -v
 
 # Stop and remove the test container and network

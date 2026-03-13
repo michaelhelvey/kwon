@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::io::Write;
+
 use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/kwon/jobs.toml";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/kwon/jobs.toml";
 const DEFAULT_HISTORY_PATH: &str = "/var/lib/kwon/history.json";
 
 #[derive(Parser, Debug)]
@@ -29,10 +31,11 @@ pub enum Commands {
     /// Installs kwon as a daemon on your system
     Install {
         /// Install as a systemd service
-        systemd: Option<bool>,
+        #[arg(long)]
+        systemd: bool,
     },
     /// Starts the daemon process.  Use this to run kwon in the foreground, or use this as the
-    /// command to run in your sytemd service config or other
+    /// command to run in your systemd service config or other
     Daemon,
 
     /// Load kwon's configuration and print everything it knows about its environment to stdout.
@@ -92,7 +95,7 @@ pub struct JobSpecification {
     ///
     /// If you need jobs to run with more detailed granularity, or more often than once every 60
     /// seconds, `kwon` is probably not a good fit.
-    pub interval_seconds: i64,
+    pub interval_seconds: u64,
 }
 
 /// Specification for the TOML configuration file, which by default lives at /etc/kwon/jobs.toml,
@@ -194,6 +197,7 @@ impl HistoryDatabase {
     }
 
     /// Inserts a job run into the database and persists the database to the file.
+    /// Uses atomic write (write to temp file, then rename) to prevent corruption.
     pub async fn write_last_run(&mut self, job_id: &str) -> anyhow::Result<()> {
         self.history.jobs.insert(
             job_id.to_string(),
@@ -203,7 +207,24 @@ impl HistoryDatabase {
         );
 
         let history_bytes = serde_json::to_string(&self.history)?;
-        tokio::fs::write(&self.resolved_path, history_bytes).await?;
+        let resolved_path = self.resolved_path.clone();
+
+        // Perform the atomic write on a blocking thread since tempfile and
+        // std::fs::rename are synchronous operations.
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let parent = resolved_path
+                .parent()
+                .context("history file path has no parent directory")?;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent.as_std_path())
+                .context("could not create temp file for atomic history write")?;
+            tmp.write_all(history_bytes.as_bytes())
+                .context("could not write history to temp file")?;
+            tmp.persist(resolved_path.as_std_path())
+                .context("could not atomically rename temp history file")?;
+            Ok(())
+        })
+        .await??;
+
         Ok(())
     }
 }

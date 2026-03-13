@@ -59,14 +59,14 @@ jobs:
 
       - name: Write docker-compose override for CI
         run: |
-          cat > docker-compose.override.yml << 'EOF'
-          services:
-            kwon:
-              platform: linux/amd64
-              volumes:
-                - ./target/x86_64-unknown-linux-musl/debug:/opt/kwon-bin
-                - ./data:/var/log/kwon
-          EOF
+          printf '%s\n' \
+            'services:' \
+            '  kwon:' \
+            '    platform: linux/amd64' \
+            '    volumes:' \
+            '      - ./target/x86_64-unknown-linux-musl/debug:/opt/kwon-bin' \
+            '      - ./data:/var/log/kwon' \
+            > docker-compose.override.yml
 
       - name: Start test container
         run: |

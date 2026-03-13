@@ -28,16 +28,24 @@ consciously for single-user personal computers.
 
 ## Getting Started
 
-**Pre-requisites**: A reasonably recent Rust toolchain. At the time of writing, for me, that's
-`rustc 1.93.1 (01f6ddf75 2026-02-11)`. And a computer running linux. (You can probably adapt this to
-work on any nix-like pretty easily, but I've only tested on linux -- see the e2e test.)
+**Pre-requisites**: A computer running Linux. (You can probably adapt this to work on any nix-like
+pretty easily, but I've only tested on Linux -- see the e2e tests.)
 
-1. Download this repository.
-2. Run `cargo build --release` from the repository root. Feel free to customize the target with
-   `--target` as you see fit, e.g. to build against `musl` as your libc. At this point, you should
-   have a copy of the binary at `./target/release/kwon`.
-3. Copy `./target/release/kwon` to somwhere on your `$PATH`. Or don't, and type out the absolute
-   path to it every time. It's your system, I won't tell you what to do :^)
+### Install
+
+Install from [crates.io](https://crates.io/crates/kwon) using Cargo:
+
+```sh
+cargo install kwon
+```
+
+This will download, compile, and place the `kwon` binary in your `~/.cargo/bin/` directory. Make
+sure that's on your `$PATH`.
+
+If you'd rather build from source, clone this repository and run `cargo build --release`. Feel free
+to customize the target with `--target` as you see fit, e.g. to build against `musl` as your libc.
+
+### Setup
 
 **I have a systemd-based linux distribution**
 
