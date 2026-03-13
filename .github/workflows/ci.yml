@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     branches: [main]
 
@@ -57,34 +57,52 @@ jobs:
       - name: Cross-compile for linux/amd64
         run: cargo build --target $E2E_TARGET
 
-      - name: Write docker-compose override for CI
-        run: |
-          printf '%s\n' \
-            'services:' \
-            '  kwon:' \
-            '    platform: linux/amd64' \
-            '    privileged: true' \
-            '    volumes:' \
-            '      - ./target/x86_64-unknown-linux-musl/debug:/opt/kwon-bin' \
-            '      - ./data:/var/log/kwon' \
-            '      - /sys/fs/cgroup:/sys/fs/cgroup:rw' \
-            '    tmpfs:' \
-            '      - /run' \
-            '      - /run/lock' \
-            > docker-compose.override.yml
-
-      - name: Start test container
+      - name: Build and start test container
         run: |
           mkdir -p data
           touch ./data/kwon.log
-          docker compose up -d --build
+          # Build the image from the e2e Dockerfile
+          docker build -t kwon-e2e -f scripts/Dockerfile.e2e scripts/
+          # Run with docker run so we can pass --cgroupns=host (not supported in compose)
+          docker run -d \
+            --name kwon-e2e \
+            --privileged \
+            --cgroupns=host \
+            -v "$PWD/target/x86_64-unknown-linux-musl/debug:/opt/kwon-bin" \
+            -v "$PWD/data:/var/log/kwon" \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            kwon-e2e
+          echo "--- checking container status ---"
+          docker ps -a --filter name=kwon-e2e
+          echo "--- container logs right after start ---"
+          docker logs kwon-e2e 2>&1 | tail -30
           # Wait for systemd to finish booting inside the container
-          for i in $(seq 1 30); do
-            if docker compose exec kwon systemctl is-system-running --wait 2>/dev/null | grep -qE 'running|degraded'; then
-              echo "systemd is ready"
+          for i in $(seq 1 60); do
+            # Check if container is still running
+            if [ "$(docker inspect -f '{{.State.Running}}' kwon-e2e 2>/dev/null)" != "true" ]; then
+              echo "ERROR: container is not running!"
+              docker ps -a --filter name=kwon-e2e
+              docker logs kwon-e2e
+              exit 1
+            fi
+            state=$(docker exec kwon-e2e systemctl is-system-running 2>&1 || true)
+            echo "systemd state ($i): $state"
+            if echo "$state" | grep -qE '^running$|^degraded$'; then
+              echo "systemd is ready (state: $state)"
               break
             fi
-            echo "Waiting for systemd to boot... ($i)"
+            if [ "$i" -eq 60 ]; then
+              echo "ERROR: systemd did not become ready after 60 seconds"
+              echo "--- container logs ---"
+              docker logs kwon-e2e
+              echo "--- systemctl status ---"
+              docker exec kwon-e2e systemctl status --no-pager || true
+              echo "--- failed units ---"
+              docker exec kwon-e2e systemctl --failed --no-pager || true
+              exit 1
+            fi
             sleep 1
           done
 
@@ -94,12 +112,17 @@ jobs:
       - name: Run e2e tests
         env:
           DOCKER: docker
+          E2E_CONTAINER: kwon-e2e
         run: |
-          # ensure rsyslogd is running inside the container
-          docker compose exec kwon bash -c \
-            "pgrep rsyslogd || (sed -i '/imklog/d' /etc/rsyslog.conf && rsyslogd)"
+          # ensure rsyslogd is running inside the container (strip imklog
+          # which requires /dev/kmsg not available in containers)
+          docker exec kwon-e2e bash -c \
+            "sed -i '/imklog/d' /etc/rsyslog.conf; pgrep rsyslogd || rsyslogd"
           uv run --script ./scripts/test.py -v
 
       - name: Teardown
         if: always()
-        run: docker compose down
+        run: |
+          echo "--- container logs ---"
+          docker logs kwon-e2e 2>&1 | tail -50 || true
+          docker rm -f kwon-e2e || true

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.14"
+# requires-python = ">=3.12"
 # dependencies = []
 # ///
 import os
@@ -12,6 +12,10 @@ from typing import Optional
 
 # adapt as necessary for your system (override via DOCKER env var)
 DOCKER = os.environ.get("DOCKER", "/opt/podman/bin/podman")
+# When E2E_CONTAINER is set, use `docker exec <container>` directly instead of
+# `docker compose exec kwon`.  This is used in CI where we run the container
+# via `docker run` (to pass --cgroupns=host which docker-compose doesn't support).
+E2E_CONTAINER = os.environ.get("E2E_CONTAINER", "")
 CONTAINER_CONFIG_PATH = "/etc/kwon/jobs.toml"
 CONTAINER_KWON_BIN = "/opt/kwon-bin/kwon"
 CONTAINER_LOG_FILE = "/var/log/kwon/kwon.log"
@@ -25,10 +29,18 @@ TICK_RATE = 2
 
 
 def docker_exec(cmd: str, check=True, input_bytes: Optional[bytes] = None):
-    args = [DOCKER, "compose", "exec"]
-    if input_bytes is not None:
-        args.append("-T")
-    args += ["kwon", "bash", "-c", cmd]
+    if E2E_CONTAINER:
+        # Direct docker exec mode (CI)
+        args = [DOCKER, "exec"]
+        if input_bytes is not None:
+            args.append("-i")
+        args += [E2E_CONTAINER, "bash", "-c", cmd]
+    else:
+        # docker compose exec mode (local dev)
+        args = [DOCKER, "compose", "exec"]
+        if input_bytes is not None:
+            args.append("-T")
+        args += ["kwon", "bash", "-c", cmd]
 
     result = subprocess.run(args, capture_output=True, input=input_bytes)
 
@@ -108,7 +120,9 @@ def run_daemon(config: str):
         yield
     finally:
         docker_exec("pkill -f 'kwon daemon'", check=False)
-        docker_exec(f"rm -rf {CONTAINER_MARKER_DIR} {CONTAINER_HISTORY_FILE}", check=False)
+        docker_exec(
+            f"rm -rf {CONTAINER_MARKER_DIR} {CONTAINER_HISTORY_FILE}", check=False
+        )
         write_container_config("")
 
 
@@ -188,7 +202,9 @@ interval_seconds = 3600
         with run_daemon(config):
             # wait for one full tick + buffer
             time.sleep(TICK_RATE + 2)
-            self.assertTrue(marker_exists("ran"), "expected job to have created marker file")
+            self.assertTrue(
+                marker_exists("ran"), "expected job to have created marker file"
+            )
 
     def test_job_does_not_run_when_start_at_is_in_the_future(self):
         """A job with start_at in the future should NOT execute."""
@@ -221,7 +237,9 @@ interval_seconds = 3600
             # wait for two ticks
             time.sleep((TICK_RATE + 1) * 2)
             count = marker_count("count")
-            self.assertEqual(count, 1, f"expected job to run exactly once, but ran {count} times")
+            self.assertEqual(
+                count, 1, f"expected job to run exactly once, but ran {count} times"
+            )
 
     def test_failed_job_does_not_record_history(self):
         """A job that exits non-zero should not be recorded in history,
